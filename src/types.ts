@@ -60,6 +60,8 @@ export interface LivelineProps {
 
   // Multi-series mode — when provided, overrides data/value/color
   series?: LivelineSeries[]
+  /** Series used to drive multi-series effects such as orderbook, degen, fill, and value display. */
+  primarySeriesId?: string
 
   // Appearance
   theme?: ThemeMode

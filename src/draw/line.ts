@@ -87,6 +87,7 @@ export function drawLine(
   colorBlend: number = 1,
   skipDashLine: boolean = false,
   fillScale: number = 1,
+  strokeScale: number = 1,
 ) {
   const { h, pad, toX, toY, chartW, chartH } = layout
   const incomingAlpha = ctx.globalAlpha
@@ -171,7 +172,7 @@ export function drawLine(
     ctx.beginPath()
     ctx.rect(0, 0, scrubX!, h)
     ctx.clip()
-    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha, fillAlpha, strokeColor)
+    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha * strokeScale, fillAlpha, strokeColor)
     ctx.restore()
 
     // Dimmed portion: clipped to RIGHT of scrub point
@@ -180,10 +181,10 @@ export function drawLine(
     ctx.rect(scrubX!, 0, layout.w - scrubX!, h)
     ctx.clip()
     ctx.globalAlpha = incomingAlpha * (1 - scrubAmount * 0.6)
-    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha, fillAlpha, strokeColor)
+    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha * strokeScale, fillAlpha, strokeColor)
     ctx.restore()
   } else {
-    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha, fillAlpha, strokeColor)
+    renderCurve(ctx, layout, palette, pts, showFill, lineAlpha * strokeScale, fillAlpha, strokeColor)
   }
 
   // Restore from chart-area clip

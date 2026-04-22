@@ -233,6 +233,7 @@ export function drawFrame(
 // ─── Multi-series draw orchestration ──────────────────────────────────────
 
 export interface MultiSeriesEntry {
+  id: string
   visible: LivelinePoint[]
   smoothValue: number
   palette: LivelinePalette
@@ -259,6 +260,18 @@ export interface MultiSeriesDrawOptions {
   targetWindowSecs: number
   tooltipY: number
   tooltipOutline: boolean
+  showFill: boolean
+  showMomentum: boolean
+  momentum: Momentum
+  arrowState: ArrowState
+  orderbookData?: OrderbookData
+  orderbookState?: OrderbookState
+  particleState?: ParticleState
+  particleOptions?: DegenOptions
+  swingMagnitude: number
+  shakeState?: ShakeState
+  primarySeriesId?: string
+  emphasizePrimary: boolean
   chartReveal: number
   pauseProgress: number
   now_ms: number
@@ -268,7 +281,7 @@ export interface MultiSeriesDrawOptions {
 
 /**
  * Multi-series draw function — draws multiple overlapping lines sharing the same axes.
- * No fill, no momentum arrows, no badge (those are per-chart concerns handled by the engine).
+ * Primary-series effects are opt-in and share the same chart transform/range as every line.
  */
 export function drawMultiFrame(
   ctx: CanvasRenderingContext2D,
@@ -277,6 +290,23 @@ export function drawMultiFrame(
 ): void {
   const palette = opts.primaryPalette
   const reveal = opts.chartReveal
+  const pause = opts.pauseProgress
+
+  // 0. Chart shake — one transform for the whole multi-series frame.
+  const shake = opts.shakeState
+  let shakeX = 0
+  let shakeY = 0
+  if (shake && shake.amplitude > SHAKE_MIN_AMPLITUDE) {
+    shakeX = (Math.random() - 0.5) * 2 * shake.amplitude
+    shakeY = (Math.random() - 0.5) * 2 * shake.amplitude
+    ctx.save()
+    ctx.translate(shakeX, shakeY)
+  }
+  if (shake) {
+    const decayRate = Math.pow(SHAKE_DECAY_RATE, opts.dt / 1000)
+    shake.amplitude *= decayRate
+    if (shake.amplitude < SHAKE_MIN_AMPLITUDE) shake.amplitude = 0
+  }
 
   const revealRamp = (start: number, end: number) => {
     const t = Math.max(0, Math.min(1, (reveal - start) / (end - start)))
@@ -302,12 +332,38 @@ export function drawMultiFrame(
     }
   }
 
-  // 3. Draw each series line (back to front, no fill, with scrub dimming)
+  // 2b. Orderbook (behind lines) — driven by the primary series activity.
+  if (opts.orderbookData && opts.orderbookState && reveal > 0.01) {
+    ctx.save()
+    if (reveal < 1) ctx.globalAlpha = reveal
+    drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude)
+    ctx.restore()
+  }
+
+  // 3. Optional primary fill, drawn before all strokes so secondary lines remain legible.
+  const primarySeries = opts.primarySeriesId
+    ? opts.series.find(s => s.id === opts.primarySeriesId)
+    : undefined
   // During reverse morph, secondary lines fade out so only one remains at
   // chartReveal=0 — prevents alpha compounding from multiple overlapping strokes
   // looking brighter than the single standalone loading squiggly.
   const scrubX = opts.scrubAmount > 0.05 ? opts.hoverX : null
-  const allPts: { pts: [number, number][]; palette: LivelinePalette; label?: string; alpha: number }[] = []
+  if (opts.showFill && primarySeries && (primarySeries.alpha ?? 1) > 0.01) {
+    ctx.save()
+    const fillAlpha = primarySeries.alpha ?? 1
+    if (fillAlpha < 1) ctx.globalAlpha *= fillAlpha
+    drawLine(
+      ctx, layout, primarySeries.palette, primarySeries.visible, primarySeries.smoothValue, opts.now,
+      true,
+      scrubX, opts.scrubAmount,
+      reveal, opts.now_ms,
+      1, true, 1, 0,
+    )
+    ctx.restore()
+  }
+
+  // 4. Draw each series line (back to front, with scrub dimming)
+  const allPts: { id: string; pts: [number, number][]; palette: LivelinePalette; label?: string; alpha: number }[] = []
   for (let si = 0; si < opts.series.length; si++) {
     const s = opts.series[si]
     const seriesAlpha = s.alpha ?? 1
@@ -324,11 +380,11 @@ export function drawMultiFrame(
     )
     ctx.restore()
     if (pts && pts.length > 0) {
-      allPts.push({ pts, palette: s.palette, label: s.label, alpha: seriesAlpha })
+      allPts.push({ id: s.id, pts, palette: s.palette, label: s.label, alpha: seriesAlpha })
     }
   }
 
-  // 4. Time axis
+  // 5. Time axis
   {
     const timeAlpha = reveal < 1 ? revealRamp(0.15, 0.7) : 1
     if (timeAlpha > 0.01) {
@@ -339,22 +395,33 @@ export function drawMultiFrame(
     }
   }
 
-  // 5. Endpoint dots + labels for each series
+  // 6. Endpoint dots + labels for each series
   // Dots stay at reveal-based alpha only (no scrub dimming) — matching
   // single-series where drawDot keeps inner dot at full baseAlpha
   if (reveal > 0.3 && allPts.length > 0) {
     const dotAlpha = (reveal - 0.3) / 0.7
-    const showPulse = opts.showPulse && reveal > 0.6 && opts.pauseProgress < 0.5
+    const showPulse = opts.showPulse && reveal > 0.6 && pause < 0.5
 
     for (const entry of allPts) {
       if (entry.alpha < 0.01) continue
       const lastPt = entry.pts[entry.pts.length - 1]
+      const isPrimary = opts.emphasizePrimary && entry.id === opts.primarySeriesId
 
       ctx.save()
       ctx.globalAlpha = dotAlpha * entry.alpha
 
-      // Use pulsing dot when enabled and series is mostly visible
-      if (showPulse && entry.alpha > 0.5) {
+      // Use single-series live dot treatment for an explicitly selected primary.
+      if (isPrimary) {
+        let dotScrub = opts.scrubAmount
+        if (opts.hoverX !== null && dotScrub > 0) {
+          const distToLive = lastPt[0] - opts.hoverX
+          const fadeStart = Math.min(80, layout.chartW * 0.3)
+          dotScrub = distToLive < CROSSHAIR_FADE_MIN_PX ? 0
+            : distToLive >= fadeStart ? opts.scrubAmount
+            : ((distToLive - CROSSHAIR_FADE_MIN_PX) / (fadeStart - CROSSHAIR_FADE_MIN_PX)) * opts.scrubAmount
+        }
+        drawDot(ctx, lastPt[0], lastPt[1], entry.palette, showPulse, dotScrub, opts.now_ms)
+      } else if (showPulse && entry.alpha > 0.5) {
         drawMultiDot(ctx, lastPt[0], lastPt[1], entry.palette.line, true, opts.now_ms, 3)
       } else {
         drawSimpleDot(ctx, lastPt[0], lastPt[1], entry.palette.line, 3)
@@ -365,13 +432,47 @@ export function drawMultiFrame(
         ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
         ctx.textAlign = 'left'
         ctx.fillStyle = entry.palette.line
-        ctx.fillText(entry.label, lastPt[0] + 6, lastPt[1] + 3.5)
+        ctx.fillText(entry.label, lastPt[0] + (isPrimary ? 10 : 6), lastPt[1] + 3.5)
       }
       ctx.restore()
     }
   }
 
-  // 6. Left edge fade
+  const primaryPts = opts.primarySeriesId
+    ? allPts.find(entry => entry.id === opts.primarySeriesId && entry.alpha > 0.01)
+    : undefined
+
+  // 6b. Primary momentum arrows and degen particles — tied only to the selected series.
+  if (primaryPts && reveal > 0.3) {
+    const lastPt = primaryPts.pts[primaryPts.pts.length - 1]
+
+    if (opts.emphasizePrimary && opts.showMomentum) {
+      const arrowReveal = reveal < 1 ? revealRamp(0.6, 1) : 1
+      const arrowAlpha = arrowReveal * (1 - pause)
+      if (arrowAlpha > 0.01) {
+        ctx.save()
+        if (arrowAlpha < 1) ctx.globalAlpha = arrowAlpha
+        drawArrows(
+          ctx, lastPt[0], lastPt[1],
+          opts.momentum, primaryPts.palette, opts.arrowState, opts.dt, opts.now_ms,
+        )
+        ctx.restore()
+      }
+    }
+
+    if (opts.particleState && reveal > 0.9) {
+      const burstIntensity = spawnOnSwing(
+        opts.particleState, opts.momentum, lastPt[0], lastPt[1],
+        opts.swingMagnitude, primaryPts.palette.line, opts.dt, opts.particleOptions,
+      )
+      if (burstIntensity > 0 && shake) {
+        shake.amplitude = (3 + opts.swingMagnitude * 4) * burstIntensity
+      }
+      drawParticles(ctx, opts.particleState, opts.dt)
+    }
+  }
+
+  // 7. Left edge fade
   ctx.save()
   ctx.globalCompositeOperation = 'destination-out'
   const fadeGrad = ctx.createLinearGradient(layout.pad.left, 0, layout.pad.left + FADE_EDGE_WIDTH, 0)
@@ -381,7 +482,7 @@ export function drawMultiFrame(
   ctx.fillRect(0, 0, layout.pad.left + FADE_EDGE_WIDTH, layout.h)
   ctx.restore()
 
-  // 7. Multi-series crosshair — fade out near live dots (same logic as single-series)
+  // 8. Multi-series crosshair — fade out near live dots (same logic as single-series)
   if (opts.hoverX !== null && opts.hoverTime !== null && opts.hoverEntries.length > 0 && allPts.length > 0 && opts.scrubAmount > 0.01) {
     // Find rightmost live dot X (skip hidden series)
     let maxLiveDotX = 0
@@ -409,6 +510,11 @@ export function drawMultiFrame(
         maxLiveDotX,
       )
     }
+  }
+
+  // Restore shake translate
+  if (shake && (shakeX !== 0 || shakeY !== 0)) {
+    ctx.restore()
   }
 }
 

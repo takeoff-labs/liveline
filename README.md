@@ -89,10 +89,13 @@ The `onModeChange` prop renders a built-in line/candle toggle next to the time w
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `series` | `LivelineSeries[]` | — | Multiple overlapping lines `{ id, data, value, color, label? }` |
+| `primarySeriesId` | `string` | first visible series | Primary series for multi-series orderbook, degen, fill, and value display |
 | `onSeriesToggle` | `(id, visible) => void` | — | Callback when a series is toggled via built-in chips |
 | `seriesToggleCompact` | `boolean` | `false` | Show only colored dots in toggle (no text labels) |
 
-Pass `series` instead of `data`/`value` to draw multiple lines sharing the same axes. Each series gets its own color, label, and endpoint dot. Toggle chips appear automatically when there are 2+ series — clicking one hides/shows that line with a smooth fade. The Y-axis range adjusts when series are hidden. Badge, momentum arrows, and fill are disabled in multi-series mode.
+Pass `series` instead of `data`/`value` to draw multiple lines sharing the same axes. Each series gets its own color, label, and endpoint dot. Toggle chips appear automatically when there are 2+ series — clicking one hides/shows that line with a smooth fade. The Y-axis range adjusts when series are hidden. Badge is disabled in multi-series mode.
+
+Use `primarySeriesId` when one series should drive chart-level effects. In multi-series mode, `orderbook`, `degen`, live value display, and primary fill follow that series; if the primary is hidden, Liveline falls back to the first visible series. For backwards compatibility, primary fill is only drawn when `fill` is true and `primarySeriesId` is provided.
 
 **State**
 
@@ -241,6 +244,26 @@ When `loading` flips to `false` with data present, the loading line morphs into 
     { label: '30s', secs: 30 },
     { label: '1m', secs: 60 },
   ]}
+/>
+```
+
+### Multi-series effects (spot + floor)
+
+```tsx
+<Liveline
+  data={spotData}
+  value={latest.spot}
+  series={[
+    { id: 'floor', label: 'FLOOR', data: floorData, value: latest.floor, color: '#5ee679' },
+    { id: 'spot', label: 'SPOT', data: spotData, value: latest.spot, color: '#a2fa38' },
+  ]}
+  primarySeriesId="spot"
+  orderbook={orderbook}
+  degen={{ scale: 0.65, downMomentum: true }}
+  fill
+  pulse
+  theme="dark"
+  color="#a2fa38"
 />
 ```
 

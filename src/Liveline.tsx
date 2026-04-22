@@ -17,6 +17,7 @@ export function Liveline({
   data,
   value,
   series: seriesProp,
+  primarySeriesId,
   theme = 'dark',
   color = '#3b82f6',
   window: windowSecs = 30,
@@ -189,9 +190,9 @@ export function Liveline({
     lerpSpeed,
     showGrid: grid,
     showBadge: isMultiSeries ? false : badge,
-    showMomentum: isMultiSeries ? false : showMomentum,
+    showMomentum,
     momentumOverride,
-    showFill: isMultiSeries ? false : fill,
+    showFill: isMultiSeries ? fill && primarySeriesId != null : fill,
     referenceLine,
     formatValue,
     formatTime,
@@ -200,7 +201,7 @@ export function Liveline({
     showPulse: pulse,
     scrub,
     exaggerate,
-    degenOptions: isMultiSeries ? undefined : degenOptions,
+    degenOptions,
     badgeTail,
     badgeVariant,
     tooltipY,
@@ -221,6 +222,8 @@ export function Liveline({
     multiSeries,
     isMultiSeries,
     hiddenSeriesIds: hiddenSeries,
+    primarySeriesId,
+    hasExplicitPrimarySeriesId: primarySeriesId != null,
   })
 
   const cursorStyle = scrub ? cursor : 'default'

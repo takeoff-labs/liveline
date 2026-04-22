@@ -64,6 +64,8 @@ interface EngineConfig {
   }>
   isMultiSeries?: boolean
   hiddenSeriesIds?: Set<string>
+  primarySeriesId?: string
+  hasExplicitPrimarySeriesId?: boolean
 }
 
 interface BadgeEls {
@@ -1463,7 +1465,8 @@ export function useLivelineEngine(
           if (lw > maxLabelW) maxLabelW = lw
         }
       }
-      labelReserve = Math.max(0, maxLabelW - 2) * chartReveal
+      const labelOffset = cfg.hasExplicitPrimarySeriesId ? 10 : 6
+      labelReserve = Math.max(0, maxLabelW + labelOffset - 8) * chartReveal
     }
 
     const chartW = w - pad.left - pad.right - labelReserve
@@ -1513,6 +1516,14 @@ export function useLivelineEngine(
       if (alpha > 0.99) alpha = 1
       seriesAlphas.set(s.id, alpha)
     }
+
+    const requestedPrimary = cfg.primarySeriesId
+      ? effectiveMultiSeries.find(s => s.id === cfg.primarySeriesId)
+      : undefined
+    const effectivePrimarySeries = requestedPrimary && !hiddenIds?.has(requestedPrimary.id)
+      ? requestedPrimary
+      : (effectiveMultiSeries.find(s => !hiddenIds?.has(s.id)) ?? requestedPrimary ?? firstSeries)
+    const effectivePrimaryId = effectivePrimarySeries.id
 
     // Window transition — seed with all series data for accurate range
     const firstData = pausedMultiDataRef.current?.get(firstSeries.id)?.data ?? firstSeries.data
@@ -1577,7 +1588,7 @@ export function useLivelineEngine(
           if (range.max > globalMax) globalMax = range.max
         }
         // Always push to entries (drawMultiFrame skips via alpha)
-        seriesEntries.push({ visible, smoothValue: sv, palette: s.palette, label: s.label, alpha })
+        seriesEntries.push({ id: s.id, visible, smoothValue: sv, palette: s.palette, label: s.label, alpha })
       }
     }
 
@@ -1629,6 +1640,17 @@ export function useLivelineEngine(
       toY: (v: number) => pad.top + (1 - (v - minVal) / valRange) * chartH,
     }
 
+    const primaryEntry = seriesEntries.find(entry => entry.id === effectivePrimaryId)
+      ?? seriesEntries.find(entry => (entry.alpha ?? 1) > 0.01)
+      ?? seriesEntries[0]
+    const drawPrimaryId = primaryEntry.id
+    const primaryMomentum: Momentum = cfg.momentumOverride ?? detectMomentum(primaryEntry.visible)
+    const primaryLookback = Math.min(5, primaryEntry.visible.length - 1)
+    const primaryRecentDelta = primaryLookback > 0
+      ? Math.abs(primaryEntry.visible[primaryEntry.visible.length - 1].value - primaryEntry.visible[primaryEntry.visible.length - 1 - primaryLookback].value)
+      : 0
+    const primarySwingMagnitude = valRange > 0 ? Math.min(primaryRecentDelta / valRange, 1) : 0
+
     // Hover — interpolate value at hover time for each series
     const hoverPx = hoverXRef.current
     let drawHoverX: number | null = null
@@ -1644,17 +1666,20 @@ export function useLivelineEngine(
       drawHoverTime = t
       isActiveHover = true
 
+      let primaryHoverValue: number | null = null
       for (const entry of seriesEntries) {
         // Skip hidden series from crosshair tooltip
         if ((entry.alpha ?? 1) < 0.5) continue
         const v = interpolateAtTime(entry.visible, t)
         if (v !== null) {
+          if (entry.id === drawPrimaryId) primaryHoverValue = v
           hoverEntries.push({ color: entry.palette.line, label: entry.label ?? '', value: v })
         }
       }
-      lastHoverRef.current = { x: clampedX, value: hoverEntries[0]?.value ?? 0, time: t }
+      const hoverValue = primaryHoverValue ?? hoverEntries[0]?.value ?? 0
+      lastHoverRef.current = { x: clampedX, value: hoverValue, time: t }
       lastHoverEntriesRef.current = hoverEntries
-      cfg.onHover?.({ time: t, value: hoverEntries[0]?.value ?? 0, x: clampedX, y: layout.toY(hoverEntries[0]?.value ?? 0) })
+      cfg.onHover?.({ time: t, value: hoverValue, x: clampedX, y: layout.toY(hoverValue) })
     }
 
     // Scrub amount
@@ -1694,10 +1719,22 @@ export function useLivelineEngine(
       targetWindowSecs: cfg.windowSecs,
       tooltipY: cfg.tooltipY,
       tooltipOutline: cfg.tooltipOutline,
+      showFill: cfg.showFill,
+      showMomentum: cfg.showMomentum,
+      momentum: primaryMomentum,
+      arrowState: arrowStateRef.current,
+      orderbookData: cfg.orderbookData,
+      orderbookState: cfg.orderbookData ? orderbookStateRef.current : undefined,
+      particleState: cfg.degenOptions ? particleStateRef.current : undefined,
+      particleOptions: cfg.degenOptions,
+      swingMagnitude: primarySwingMagnitude,
+      shakeState: cfg.degenOptions ? shakeStateRef.current : undefined,
+      primarySeriesId: drawPrimaryId,
+      emphasizePrimary: cfg.hasExplicitPrimarySeriesId === true,
       chartReveal,
       pauseProgress,
       now_ms,
-      primaryPalette: cfg.palette,
+      primaryPalette: primaryEntry.palette,
     })
 
     // During reverse morph (chart → loading/empty), overlay the empty text
@@ -1712,6 +1749,18 @@ export function useLivelineEngine(
 
     // Hide badge in multi-series mode
     if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+
+    // Live value display follows the effective primary series in multi-series mode.
+    const valEl = cfg.valueDisplayRef?.current
+    if (valEl) {
+      const displayVal = cfg.valueMomentumColor ? Math.abs(primaryEntry.smoothValue) : primaryEntry.smoothValue
+      valEl.textContent = cfg.formatValue(displayVal)
+      if (cfg.valueMomentumColor) {
+        const mc = primaryMomentum === 'up' ? '#22c55e' : primaryMomentum === 'down' ? '#ef4444' : ''
+        if (mc) valEl.style.color = mc
+        else valEl.style.removeProperty('color')
+      }
+    }
 
     } else {
     // ═══════════════════════════════════════════════════════

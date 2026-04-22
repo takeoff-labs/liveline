@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
-import type { LivelinePoint, LivelineSeries } from 'liveline'
+import type { LivelinePoint, LivelineSeries, OrderbookData } from 'liveline'
 
 // --- Data generators ---
 
@@ -346,6 +346,7 @@ function Demo() {
 
       {/* Multi-series demo */}
       <MultiSeriesDemo theme={theme} />
+      <SpotFloorEffectsDemo theme={theme} />
     </div>
   )
 }
@@ -543,6 +544,111 @@ function MultiSeriesDemo({ theme }: { theme: 'dark' | 'light' }) {
         <span>paused: {String(paused)}</span>
         <span>window: {windowSecs}s</span>
         <span>points: {series[0]?.data.length ?? 0}</span>
+      </div>
+    </>
+  )
+}
+
+// ─── Spot + Floor Effects Demo ─────────────────────────────────
+
+function makeOrderbook(mid: number): OrderbookData {
+  const bids: [number, number][] = []
+  const asks: [number, number][] = []
+  for (let i = 0; i < 8; i++) {
+    const distance = (i + 1) * 0.12
+    const sizeBias = 8 - i
+    bids.push([mid - distance, 0.8 + Math.random() * sizeBias])
+    asks.push([mid + distance, 0.8 + Math.random() * sizeBias])
+  }
+  return { bids, asks }
+}
+
+function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
+  const [series, setSeries] = useState<LivelineSeries[]>([])
+  const [orderbook, setOrderbook] = useState<OrderbookData>(() => makeOrderbook(100))
+  const [paused, setPaused] = useState(false)
+  const intervalRef = useRef<number>(0)
+
+  useEffect(() => {
+    clearInterval(intervalRef.current)
+    const now = Date.now() / 1000
+    const spotData: LivelinePoint[] = []
+    const floorData: LivelinePoint[] = []
+    let floor = 94
+    let spot = 100
+
+    for (let i = 180; i >= 0; i--) {
+      const t = now - i * 0.5
+      floor += (Math.random() - 0.48) * 0.16
+      spot = Math.max(floor + 1.25, spot + (Math.random() - 0.47) * 0.42)
+      floorData.push({ time: t, value: floor })
+      spotData.push({ time: t, value: spot })
+    }
+
+    setSeries([
+      { id: 'floor', label: 'FLOOR', data: floorData, value: floor, color: '#5ee679' },
+      { id: 'spot', label: 'SPOT', data: spotData, value: spot, color: '#a2fa38' },
+    ])
+    setOrderbook(makeOrderbook(spot))
+
+    intervalRef.current = window.setInterval(() => {
+      const t = Date.now() / 1000
+      floor += (Math.random() - 0.49) * 0.18
+      const spike = Math.random() < 0.08 ? (Math.random() - 0.35) * 1.8 : 0
+      spot = Math.max(floor + 1.1, spot + (Math.random() - 0.47) * 0.48 + spike)
+      setSeries(prev => {
+        const nextFloor = [...(prev[0]?.data ?? []), { time: t, value: floor }].slice(-800)
+        const nextSpot = [...(prev[1]?.data ?? []), { time: t, value: spot }].slice(-800)
+        return [
+          { id: 'floor', label: 'FLOOR', data: nextFloor, value: floor, color: '#5ee679' },
+          { id: 'spot', label: 'SPOT', data: nextSpot, value: spot, color: '#a2fa38' },
+        ]
+      })
+      setOrderbook(makeOrderbook(spot))
+    }, 300)
+
+    return () => clearInterval(intervalRef.current)
+  }, [])
+
+  const spot = series.find(s => s.id === 'spot')
+
+  return (
+    <>
+      <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 40, marginBottom: 4, borderBottom: 'none' }}>Spot + Floor Effects</h2>
+      <p style={{ fontSize: 12, color: 'var(--fg-30)', marginBottom: 12 }}>
+        Multi-series canvas with primary-series fill, orderbook, and degen effects
+      </p>
+
+      <Section label="State">
+        <Btn active={paused} onClick={() => setPaused(p => !p)}>
+          {paused ? '▶ Play' : '⏸ Pause'}
+        </Btn>
+      </Section>
+
+      <div style={{
+        height: 300,
+        background: 'var(--fg-02)',
+        borderRadius: 12,
+        border: '1px solid var(--fg-06)',
+        padding: 8,
+        overflow: 'hidden',
+        marginTop: 8,
+      }}>
+        <Liveline
+          data={spot?.data ?? []}
+          value={spot?.value ?? 0}
+          series={series}
+          primarySeriesId="spot"
+          orderbook={orderbook}
+          degen={{ scale: 0.65, downMomentum: true }}
+          fill
+          pulse
+          paused={paused}
+          theme={theme}
+          color="#a2fa38"
+          window={30}
+          formatValue={(v) => `$${v.toFixed(2)}`}
+        />
       </div>
     </>
   )
