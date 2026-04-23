@@ -1,4 +1,4 @@
-import type { LivelinePalette, ChartLayout, OrderbookData } from '../types'
+import type { LivelinePalette, ChartLayout, OrderbookData, TradeStreamData, TradeStreamEvent } from '../types'
 
 // Green: rgb(34, 197, 94), Red: rgb(239, 68, 68)
 const GREEN: [number, number, number] = [34, 197, 94]
@@ -17,6 +17,8 @@ export interface OrderbookState {
   labels: StreamLabel[]
   spawnTimer: number
   smoothSpeed: number
+  seenTradeIds: Set<string | number>
+  seenTradeQueue: Array<string | number>
   // Orderbook churn tracking
   prevBidTotal: number
   prevAskTotal: number
@@ -26,6 +28,7 @@ export interface OrderbookState {
 export function createOrderbookState(): OrderbookState {
   return {
     labels: [], spawnTimer: 0, smoothSpeed: BASE_SPEED,
+    seenTradeIds: new Set(), seenTradeQueue: [],
     prevBidTotal: 0, prevAskTotal: 0, churnRate: 0,
   }
 }
@@ -36,6 +39,7 @@ const SPAWN_INTERVAL = 40 // ms
 const MIN_LABEL_GAP = 22 // px
 const BASE_SPEED = 60 // px/s calm
 const MAX_SPEED = 160 // px/s during big activity
+const MAX_SEEN_TRADES = 1000
 
 function mixColor(
   from: [number, number, number],
@@ -46,6 +50,40 @@ function mixColor(
   const g = Math.round(from[1] + (to[1] - from[1]) * t)
   const b = Math.round(from[2] + (to[2] - from[2]) * t)
   return `rgb(${r},${g},${b})`
+}
+
+function normalizeTradeStream(tradeStream?: TradeStreamData | null): TradeStreamEvent[] {
+  if (!tradeStream) return []
+  return Array.isArray(tradeStream) ? tradeStream : [tradeStream]
+}
+
+function rememberTrade(state: OrderbookState, id: string | number): void {
+  if (state.seenTradeIds.has(id)) return
+  state.seenTradeIds.add(id)
+  state.seenTradeQueue.push(id)
+  while (state.seenTradeQueue.length > MAX_SEEN_TRADES) {
+    const oldId = state.seenTradeQueue.shift()
+    if (oldId !== undefined) state.seenTradeIds.delete(oldId)
+  }
+}
+
+function pushLabel(
+  state: OrderbookState,
+  bottomY: number,
+  size: number,
+  green: boolean,
+  intensity: number,
+  yOffset = 0,
+): void {
+  if (state.labels.length >= MAX_LABELS) return
+  state.labels.push({
+    y: bottomY - yOffset,
+    text: `+ ${formatSize(size)}`,
+    green,
+    life: LABEL_LIFETIME,
+    maxLife: LABEL_LIFETIME,
+    intensity,
+  })
 }
 
 /**
@@ -60,22 +98,28 @@ export function drawOrderbook(
   ctx: CanvasRenderingContext2D,
   layout: ChartLayout,
   palette: LivelinePalette,
-  orderbook: OrderbookData,
+  orderbook: OrderbookData | undefined,
   dt: number,
   state: OrderbookState,
   swingMagnitude: number,
+  tradeStream?: TradeStreamData | null,
 ): void {
   const { pad, h, chartH } = layout
   const dtSec = dt / 1000
 
-  if (orderbook.bids.length === 0 && orderbook.asks.length === 0) return
-
   let maxSize = 0
   let bidTotal = 0
   let askTotal = 0
-  for (const [, size] of orderbook.bids) { bidTotal += size; if (size > maxSize) maxSize = size }
-  for (const [, size] of orderbook.asks) { askTotal += size; if (size > maxSize) maxSize = size }
-  if (maxSize === 0) return
+  const bids = orderbook?.bids ?? []
+  const asks = orderbook?.asks ?? []
+  const hasBookLevels = bids.length > 0 || asks.length > 0
+  for (const [, size] of bids) { bidTotal += size; if (size > maxSize) maxSize = size }
+  for (const [, size] of asks) { askTotal += size; if (size > maxSize) maxSize = size }
+
+  const tradeEvents = normalizeTradeStream(tradeStream)
+  for (const trade of tradeEvents) {
+    if (trade.size > maxSize) maxSize = trade.size
+  }
 
   // Measure orderbook churn: how much total size changed since last frame
   // Normalized by the total size so it's scale-independent
@@ -107,9 +151,29 @@ export function drawOrderbook(
   const topY = pad.top
   const bg = palette.bgRgb
 
+  // Discrete trade tape: spawn exactly once per unseen trade id, no timer.
+  let tradeSpawnOffset = 0
+  for (const trade of tradeEvents) {
+    if (state.seenTradeIds.has(trade.id)) continue
+    rememberTrade(state, trade.id)
+    if (trade.size <= 0) continue
+    const sizeRatio = maxSize > 0 ? Math.min(trade.size / maxSize, 1) : 1
+    pushLabel(
+      state,
+      bottomY,
+      trade.size,
+      trade.side === 'buy',
+      0.5 + sizeRatio * 0.5,
+      tradeSpawnOffset,
+    )
+    tradeSpawnOffset += MIN_LABEL_GAP
+  }
+
   // Spawn new labels at bottom
-  state.spawnTimer += dt
-  while (state.spawnTimer >= SPAWN_INTERVAL && state.labels.length < MAX_LABELS) {
+  if (hasBookLevels && maxSize > 0) {
+    state.spawnTimer += dt
+  }
+  while (hasBookLevels && maxSize > 0 && state.spawnTimer >= SPAWN_INTERVAL && state.labels.length < MAX_LABELS) {
     state.spawnTimer -= SPAWN_INTERVAL
 
     // Check overlap against ALL existing labels near spawn point
@@ -124,8 +188,13 @@ export function drawOrderbook(
 
     // Weighted random pick
     const allLevels: { size: number; green: boolean }[] = []
-    for (const [, size] of orderbook.bids) allLevels.push({ size, green: true })
-    for (const [, size] of orderbook.asks) allLevels.push({ size, green: false })
+    for (const [, size] of bids) {
+      if (size > 0) allLevels.push({ size, green: true })
+    }
+    for (const [, size] of asks) {
+      if (size > 0) allLevels.push({ size, green: false })
+    }
+    if (allLevels.length === 0) break
 
     let totalWeight = 0
     for (const l of allLevels) totalWeight += l.size
@@ -137,15 +206,9 @@ export function drawOrderbook(
     }
 
     const sizeRatio = picked.size / maxSize
-    state.labels.push({
-      y: bottomY,
-      text: `+ ${formatSize(picked.size)}`,
-      green: picked.green,
-      life: LABEL_LIFETIME,
-      maxLife: LABEL_LIFETIME,
-      intensity: 0.5 + sizeRatio * 0.5,
-    })
+    pushLabel(state, bottomY, picked.size, picked.green, 0.5 + sizeRatio * 0.5)
   }
+  if (!hasBookLevels) state.spawnTimer = 0
 
   // Update positions — decelerate as labels rise (fast at bottom, slow at top)
   const range = bottomY - topY
@@ -160,6 +223,8 @@ export function drawOrderbook(
     state.labels[writeIdx++] = l
   }
   state.labels.length = writeIdx
+
+  if (state.labels.length === 0) return
 
   // Draw
   const baseAlpha = ctx.globalAlpha

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Liveline } from 'liveline'
-import type { LivelinePoint, LivelineSeries, OrderbookData } from 'liveline'
+import type { LivelinePoint, LivelineSeries, TradeStreamEvent } from 'liveline'
 
 // --- Data generators ---
 
@@ -551,21 +551,9 @@ function MultiSeriesDemo({ theme }: { theme: 'dark' | 'light' }) {
 
 // ─── Spot + Floor Effects Demo ─────────────────────────────────
 
-function makeOrderbook(mid: number): OrderbookData {
-  const bids: [number, number][] = []
-  const asks: [number, number][] = []
-  for (let i = 0; i < 8; i++) {
-    const distance = (i + 1) * 0.12
-    const sizeBias = 8 - i
-    bids.push([mid - distance, 0.8 + Math.random() * sizeBias])
-    asks.push([mid + distance, 0.8 + Math.random() * sizeBias])
-  }
-  return { bids, asks }
-}
-
 function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
   const [series, setSeries] = useState<LivelineSeries[]>([])
-  const [orderbook, setOrderbook] = useState<OrderbookData>(() => makeOrderbook(100))
+  const [latestTrade, setLatestTrade] = useState<TradeStreamEvent | null>(null)
   const [paused, setPaused] = useState(false)
   const intervalRef = useRef<number>(0)
 
@@ -576,6 +564,7 @@ function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
     const floorData: LivelinePoint[] = []
     let floor = 94
     let spot = 100
+    let tradeId = 0
 
     for (let i = 180; i >= 0; i--) {
       const t = now - i * 0.5
@@ -589,13 +578,22 @@ function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
       { id: 'floor', label: 'FLOOR', data: floorData, value: floor, color: '#5ee679' },
       { id: 'spot', label: 'SPOT', data: spotData, value: spot, color: '#a2fa38' },
     ])
-    setOrderbook(makeOrderbook(spot))
+    setLatestTrade(null)
 
     intervalRef.current = window.setInterval(() => {
       const t = Date.now() / 1000
       floor += (Math.random() - 0.49) * 0.18
       const spike = Math.random() < 0.08 ? (Math.random() - 0.35) * 1.8 : 0
+      const prevSpot = spot
       spot = Math.max(floor + 1.1, spot + (Math.random() - 0.47) * 0.48 + spike)
+      if (Math.random() < 0.35) {
+        setLatestTrade({
+          id: tradeId++,
+          side: spot >= prevSpot ? 'buy' : 'sell',
+          price: spot,
+          size: 1 + Math.random() * 8 + Math.abs(spike) * 2,
+        })
+      }
       setSeries(prev => {
         const nextFloor = [...(prev[0]?.data ?? []), { time: t, value: floor }].slice(-800)
         const nextSpot = [...(prev[1]?.data ?? []), { time: t, value: spot }].slice(-800)
@@ -604,7 +602,6 @@ function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
           { id: 'spot', label: 'SPOT', data: nextSpot, value: spot, color: '#a2fa38' },
         ]
       })
-      setOrderbook(makeOrderbook(spot))
     }, 300)
 
     return () => clearInterval(intervalRef.current)
@@ -616,7 +613,7 @@ function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
     <>
       <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 40, marginBottom: 4, borderBottom: 'none' }}>Spot + Floor Effects</h2>
       <p style={{ fontSize: 12, color: 'var(--fg-30)', marginBottom: 12 }}>
-        Multi-series canvas with primary-series fill, orderbook, and degen effects
+        Multi-series canvas with primary fill, per-series badges, trade tape, and degen effects
       </p>
 
       <Section label="State">
@@ -639,8 +636,9 @@ function SpotFloorEffectsDemo({ theme }: { theme: 'dark' | 'light' }) {
           value={spot?.value ?? 0}
           series={series}
           primarySeriesId="spot"
-          orderbook={orderbook}
+          tradeStream={latestTrade}
           degen={{ scale: 0.65, downMomentum: true }}
+          badge
           fill
           pulse
           paused={paused}

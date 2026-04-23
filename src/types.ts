@@ -39,6 +39,15 @@ export interface OrderbookData {
   asks: [number, number][]  // [price, size][]
 }
 
+export interface TradeStreamEvent {
+  side: 'buy' | 'sell'
+  price: number
+  size: number
+  id: string | number
+}
+
+export type TradeStreamData = TradeStreamEvent | TradeStreamEvent[]
+
 export interface DegenOptions {
   /** Multiplier for particle count and size (default 1) */
   scale?: number
@@ -69,6 +78,8 @@ export interface LivelineProps {
 
   // Time
   window?: number
+  /** Fraction of the window reserved to the right of the live tip (default: 0.05 with badge, 0.015 without). */
+  windowBuffer?: number
 
   // Feature flags
   grid?: boolean
@@ -99,6 +110,7 @@ export interface LivelineProps {
 
   // Orderbook
   orderbook?: OrderbookData
+  tradeStream?: TradeStreamData | null
 
   // Optional
   referenceLine?: ReferenceLine

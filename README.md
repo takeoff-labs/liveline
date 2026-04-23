@@ -93,9 +93,11 @@ The `onModeChange` prop renders a built-in line/candle toggle next to the time w
 | `onSeriesToggle` | `(id, visible) => void` | — | Callback when a series is toggled via built-in chips |
 | `seriesToggleCompact` | `boolean` | `false` | Show only colored dots in toggle (no text labels) |
 
-Pass `series` instead of `data`/`value` to draw multiple lines sharing the same axes. Each series gets its own color, label, and endpoint dot. Toggle chips appear automatically when there are 2+ series — clicking one hides/shows that line with a smooth fade. The Y-axis range adjusts when series are hidden. Badge is disabled in multi-series mode.
+Pass `series` instead of `data`/`value` to draw multiple lines sharing the same axes. Each series gets its own color, label, and endpoint dot. Toggle chips appear automatically when there are 2+ series — clicking one hides/shows that line with a smooth fade. The Y-axis range adjusts when series are hidden.
 
 Use `primarySeriesId` when one series should drive chart-level effects. In multi-series mode, `orderbook`, `degen`, live value display, and primary fill follow that series; if the primary is hidden, Liveline falls back to the first visible series. For backwards compatibility, primary fill is only drawn when `fill` is true and `primarySeriesId` is provided.
+
+Multi-series charts keep the original canvas endpoint labels unless you explicitly pass `badge={true}`. With `series` and `badge={true}`, Liveline renders one DOM badge pill per visible series, colored by that series, stacked to avoid collisions, and overlapping the Y-axis label area like the single-series badge.
 
 **State**
 
@@ -128,6 +130,7 @@ When `loading` flips to `false` with data present, the loading line morphs into 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `orderbook` | `OrderbookData` | — | Bid/ask depth stream `{ bids, asks }` |
+| `tradeStream` | `TradeStreamEvent \| TradeStreamEvent[] \| null` | — | Discrete trade tape event(s), `{ id, side, price, size }`; each unseen `id` spawns one drifting label |
 
 **Advanced**
 
@@ -259,13 +262,29 @@ When `loading` flips to `false` with data present, the loading line morphs into 
   ]}
   primarySeriesId="spot"
   orderbook={orderbook}
+  tradeStream={latestTrade}
   degen={{ scale: 0.65, downMomentum: true }}
+  badge={true}
   fill
   pulse
   theme="dark"
   color="#a2fa38"
 />
 ```
+
+### Trade stream tape
+
+```tsx
+<Liveline
+  data={data}
+  value={value}
+  color="#a2fa38"
+  tradeStream={latestTrade}
+  degen={{ scale: 0.65, downMomentum: true }}
+/>
+```
+
+`tradeStream` is for real fills/trades. The renderer dedupes by `id`, so a static latest trade or ring buffer does not re-spawn labels every frame. Passing `null` or `undefined` is idle: existing labels keep drifting and fade out naturally.
 
 ### Loading + pause
 
@@ -299,7 +318,8 @@ When `loading` flips to `false` with data present, the loading line morphs into 
 - **Frame-rate-independent lerp** on value, Y-axis range, badge color, and scrub opacity
 - **Candlestick rendering** — OHLC bodies + wicks with bull/bear coloring, smooth live candle updates
 - **Line/candle morph** — candle bodies collapse to close price, morph line extends center-out, coordinated alpha crossfade
-- **Multi-series** — overlapping lines with per-series toggle, smooth alpha fade, and dynamic Y-axis range
+- **Multi-series** — overlapping lines with per-series toggle, smooth alpha fade, dynamic Y-axis range, and optional DOM badges
+- **Trade tape** — discrete trade labels spawn once per trade id and keep animating during idle periods
 - **ResizeObserver** tracks container size — no per-frame layout reads
 - **Theme derivation** — full palette from one accent color + light/dark mode
 - **Binary search interpolation** for hover value lookup

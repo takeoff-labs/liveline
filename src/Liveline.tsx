@@ -21,8 +21,9 @@ export function Liveline({
   theme = 'dark',
   color = '#3b82f6',
   window: windowSecs = 30,
+  windowBuffer,
   grid = true,
-  badge = true,
+  badge: badgeProp,
   momentum = true,
   fill = true,
   scrub = true,
@@ -41,6 +42,7 @@ export function Liveline({
   tooltipY = 14,
   tooltipOutline = true,
   orderbook,
+  tradeStream,
   referenceLine,
   formatValue = defaultFormatValue,
   formatTime = defaultFormatTime,
@@ -83,6 +85,8 @@ export function Liveline({
   }, [color, theme, lineWidth])
   const isDark = theme === 'dark'
   const isMultiSeries = seriesProp != null && seriesProp.length > 0
+  const badge = badgeProp ?? true
+  const showMultiSeriesBadges = isMultiSeries && badgeProp === true
   const showSeriesToggle = (lastSeriesPropRef.current?.length ?? 0) > 1
 
   // Per-series palettes (memoized on series ids + colors + theme)
@@ -187,9 +191,10 @@ export function Liveline({
     value,
     palette,
     windowSecs: effectiveWindowSecs,
+    windowBufferOverride: windowBuffer,
     lerpSpeed,
     showGrid: grid,
-    showBadge: isMultiSeries ? false : badge,
+    showBadge: isMultiSeries ? showMultiSeriesBadges : badge,
     showMomentum,
     momentumOverride,
     showFill: isMultiSeries ? fill && primarySeriesId != null : fill,
@@ -209,6 +214,7 @@ export function Liveline({
     valueMomentumColor,
     valueDisplayRef: showValue ? valueDisplayRef : undefined,
     orderbookData: orderbook,
+    tradeStreamData: tradeStream,
     loading,
     paused,
     emptyText,

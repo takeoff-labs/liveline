@@ -1,4 +1,4 @@
-import type { LivelinePalette, ChartLayout, LivelinePoint, Momentum, ReferenceLine, OrderbookData, DegenOptions, CandlePoint } from '../types'
+import type { LivelinePalette, ChartLayout, LivelinePoint, Momentum, ReferenceLine, OrderbookData, TradeStreamData, DegenOptions, CandlePoint } from '../types'
 import { drawGrid, type GridState } from './grid'
 import { drawLine } from './line'
 import { drawDot, drawArrows, drawSimpleDot, drawMultiDot } from './dot'
@@ -52,6 +52,7 @@ export interface DrawOptions {
   tooltipY: number
   tooltipOutline: boolean
   orderbookData?: OrderbookData
+  tradeStreamData?: TradeStreamData | null
   orderbookState?: OrderbookState
   particleState?: ParticleState
   particleOptions?: DegenOptions
@@ -118,10 +119,11 @@ export function drawFrame(
   }
 
   // 2b. Orderbook (behind line) — fades with reveal
-  if (opts.orderbookData && opts.orderbookState && reveal > 0.01) {
+  if (opts.orderbookState && reveal > 0.01
+    && (opts.orderbookData || opts.tradeStreamData || opts.orderbookState.labels.length > 0)) {
     ctx.save()
     if (reveal < 1) ctx.globalAlpha = reveal
-    drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude)
+    drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude, opts.tradeStreamData)
     ctx.restore()
   }
 
@@ -246,6 +248,7 @@ export interface MultiSeriesDrawOptions {
   now: number
   showGrid: boolean
   showPulse: boolean
+  showLabels: boolean
   referenceLine?: ReferenceLine
   hoverX: number | null
   hoverTime: number | null
@@ -265,6 +268,7 @@ export interface MultiSeriesDrawOptions {
   momentum: Momentum
   arrowState: ArrowState
   orderbookData?: OrderbookData
+  tradeStreamData?: TradeStreamData | null
   orderbookState?: OrderbookState
   particleState?: ParticleState
   particleOptions?: DegenOptions
@@ -333,10 +337,11 @@ export function drawMultiFrame(
   }
 
   // 2b. Orderbook (behind lines) — driven by the primary series activity.
-  if (opts.orderbookData && opts.orderbookState && reveal > 0.01) {
+  if (opts.orderbookState && reveal > 0.01
+    && (opts.orderbookData || opts.tradeStreamData || opts.orderbookState.labels.length > 0)) {
     ctx.save()
     if (reveal < 1) ctx.globalAlpha = reveal
-    drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude)
+    drawOrderbook(ctx, layout, palette, opts.orderbookData, opts.dt, opts.orderbookState, opts.swingMagnitude, opts.tradeStreamData)
     ctx.restore()
   }
 
@@ -428,7 +433,7 @@ export function drawMultiFrame(
       }
 
       // Label at endpoint (right of dot — layout reserves space via labelReserve)
-      if (entry.label) {
+      if (opts.showLabels && entry.label) {
         ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
         ctx.textAlign = 'left'
         ctx.fillStyle = entry.palette.line

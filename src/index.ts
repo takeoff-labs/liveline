@@ -13,6 +13,8 @@ export type {
   Padding,
   WindowOption,
   OrderbookData,
+  TradeStreamEvent,
+  TradeStreamData,
   DegenOptions,
   WindowStyle,
   BadgeVariant,

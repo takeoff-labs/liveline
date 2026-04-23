@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react'
-import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, DegenOptions, BadgeVariant, CandlePoint } from './types'
+import type { LivelinePoint, LivelinePalette, LivelineSeries, Momentum, ReferenceLine, HoverPoint, Padding, ChartLayout, OrderbookData, TradeStreamData, DegenOptions, BadgeVariant, CandlePoint } from './types'
 import { lerp } from './math/lerp'
 import { computeRange } from './math/range'
 import { detectMomentum } from './math/momentum'
@@ -19,6 +19,7 @@ interface EngineConfig {
   value: number
   palette: LivelinePalette
   windowSecs: number
+  windowBufferOverride?: number
   lerpSpeed: number
   showGrid: boolean
   showBadge: boolean
@@ -41,6 +42,7 @@ interface EngineConfig {
   valueMomentumColor: boolean
   valueDisplayRef?: React.RefObject<HTMLSpanElement | null>
   orderbookData?: OrderbookData
+  tradeStreamData?: TradeStreamData | null
   loading?: boolean
   paused?: boolean
   emptyText?: string
@@ -78,6 +80,32 @@ interface BadgeEls {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
+
+function createBadgeEls(container: HTMLDivElement): BadgeEls {
+  const el = document.createElement('div')
+  el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;will-change:transform;display:none;z-index:1;'
+
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.style.cssText = 'position:absolute;top:0;left:0;'
+
+  const path = document.createElementNS(SVG_NS, 'path')
+  svg.appendChild(path)
+
+  const text = document.createElement('span')
+  text.style.cssText = 'position:relative;display:block;color:#0a0a0a;white-space:nowrap;'
+
+  el.appendChild(svg)
+  el.appendChild(text)
+  container.appendChild(el)
+
+  return { container: el, svg, path, text, displayW: 0, targetW: 0 }
+}
+
+function hideBadgeMap(badges: Map<string, BadgeEls>): void {
+  for (const badge of badges.values()) {
+    badge.container.style.display = 'none'
+  }
+}
 
 // --- Constants ---
 const MAX_DELTA_MS = 50
@@ -390,7 +418,7 @@ function updateBadgeDOM(
     badge.container.style.filter = `drop-shadow(0 1px 4px ${cfg.palette.badgeOuterShadow})`
   } else {
     badge.container.style.filter = ''
-    badge.text.style.color = '#fff'
+    badge.text.style.color = '#0a0a0a'
     const bs = badgeColor
     let fillColor: string
     if (!cfg.showMomentum) {
@@ -407,6 +435,86 @@ function updateBadgeDOM(
       fillColor = `rgb(${rr},${gg},${bb})`
     }
     badge.path.setAttribute('fill', fillColor)
+  }
+
+  return badgeY
+}
+
+function updateSeriesBadgeDOM(
+  badge: BadgeEls,
+  cfg: EngineConfig,
+  palette: LivelinePalette,
+  smoothValue: number,
+  targetY: number,
+  layout: ChartLayout,
+  badgeY: number | null,
+  noMotion: boolean,
+  ctx: CanvasRenderingContext2D,
+  dt: number,
+  chartReveal: number,
+  alpha: number,
+): number | null {
+  if (!cfg.showBadge || chartReveal < 0.25 || alpha < 0.01) {
+    badge.container.style.display = 'none'
+    return badgeY
+  }
+
+  badge.container.style.display = ''
+  const badgeOpacity = chartReveal < 0.5 ? (chartReveal - 0.25) / 0.25 : 1
+  badge.container.style.opacity = String(badgeOpacity * alpha)
+  const { w, h, pad } = layout
+
+  const text = cfg.formatValue(smoothValue)
+  badge.text.textContent = text
+  badge.text.style.font = palette.labelFont
+  badge.text.style.lineHeight = `${BADGE_LINE_H}px`
+  const tailLen = cfg.badgeTail ? BADGE_TAIL_LEN : 0
+  badge.text.style.padding = `${BADGE_PAD_Y}px ${BADGE_PAD_X}px ${BADGE_PAD_Y}px ${tailLen + BADGE_PAD_X}px`
+
+  ctx.font = palette.labelFont
+  const template = text.replace(/[0-9]/g, '8')
+  const targetTextW = ctx.measureText(template).width
+
+  badge.targetW = targetTextW
+  if (badge.displayW === 0) badge.displayW = targetTextW
+  badge.displayW = lerp(badge.displayW, badge.targetW, BADGE_WIDTH_LERP, dt)
+  if (Math.abs(badge.displayW - badge.targetW) < 0.3) badge.displayW = badge.targetW
+  const textW = badge.displayW
+
+  const pillW = textW + BADGE_PAD_X * 2
+  const pillH = BADGE_LINE_H + BADGE_PAD_Y * 2
+
+  const totalW = tailLen + pillW
+  badge.svg.setAttribute('width', String(Math.ceil(totalW)))
+  badge.svg.setAttribute('height', String(pillH))
+  badge.svg.setAttribute('viewBox', `0 0 ${totalW} ${pillH}`)
+  badge.path.setAttribute('d', cfg.badgeTail
+    ? badgeSvgPath(pillW, pillH, BADGE_TAIL_LEN, BADGE_TAIL_SPREAD)
+    : badgePillOnly(pillW, pillH))
+
+  const centerY = pad.top + layout.chartH / 2
+  const realTargetY = Math.max(pad.top, Math.min(h - pad.bottom, targetY))
+  const targetBadgeY = chartReveal < 1
+    ? centerY + (realTargetY - centerY) * chartReveal
+    : realTargetY
+  if (badgeY === null || noMotion) {
+    badgeY = targetBadgeY
+  } else {
+    badgeY = lerp(badgeY, targetBadgeY, BADGE_Y_LERP, dt)
+  }
+
+  const badgeLeft = w - pad.right + 8 - BADGE_PAD_X - tailLen
+  const badgeTop = badgeY - pillH / 2
+  badge.container.style.transform = `translate3d(${badgeLeft}px, ${badgeTop}px, 0)`
+
+  if (cfg.badgeVariant === 'minimal') {
+    badge.path.setAttribute('fill', palette.badgeOuterBg)
+    badge.text.style.color = palette.tooltipText
+    badge.container.style.filter = `drop-shadow(0 1px 4px ${palette.badgeOuterShadow})`
+  } else {
+    badge.container.style.filter = ''
+    badge.text.style.color = '#0a0a0a'
+    badge.path.setAttribute('fill', palette.line)
   }
 
   return badgeY
@@ -598,6 +706,8 @@ export function useLivelineEngine(
 
   // Badge DOM element refs
   const badgeRef = useRef<BadgeEls | null>(null)
+  const multiBadgeRefs = useRef<Map<string, BadgeEls>>(new Map())
+  const multiBadgeYRefs = useRef<Map<string, number | null>>(new Map())
 
   // Hover state
   const hoverXRef = useRef<number | null>(null)
@@ -663,27 +773,17 @@ export function useLivelineEngine(
     const container = containerRef.current
     if (!container) return
 
-    const el = document.createElement('div')
-    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;will-change:transform;display:none;z-index:1;'
-
-    const svg = document.createElementNS(SVG_NS, 'svg')
-    svg.style.cssText = 'position:absolute;top:0;left:0;'
-
-    const path = document.createElementNS(SVG_NS, 'path')
-    svg.appendChild(path)
-
-    const text = document.createElement('span')
-    text.style.cssText = 'position:relative;display:block;color:#fff;white-space:nowrap;'
-
-    el.appendChild(svg)
-    el.appendChild(text)
-    container.appendChild(el)
-
-    badgeRef.current = { container: el, svg, path, text, displayW: 0, targetW: 0 }
+    const badge = createBadgeEls(container)
+    badgeRef.current = badge
 
     return () => {
-      container.removeChild(el)
+      badge.container.remove()
       badgeRef.current = null
+      for (const multiBadge of multiBadgeRefs.current.values()) {
+        multiBadge.container.remove()
+      }
+      multiBadgeRefs.current.clear()
+      multiBadgeYRefs.current.clear()
     }
   }, [containerRef])
 
@@ -983,6 +1083,7 @@ export function useLivelineEngine(
       ctx.restore()
 
       if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+      hideBadgeMap(multiBadgeRefs.current)
       rafRef.current = requestAnimationFrame(draw)
       return
     }
@@ -1443,6 +1544,7 @@ export function useLivelineEngine(
           badgeRef.current.container.style.display = 'none'
         }
       }
+      hideBadgeMap(multiBadgeRefs.current)
 
     } else if ((cfg.isMultiSeries && cfg.multiSeries && cfg.multiSeries.length > 0) || useMultiStash) {
     // ═══════════════════════════════════════════════════════
@@ -1450,13 +1552,14 @@ export function useLivelineEngine(
     // ═══════════════════════════════════════════════════════
 
     const effectiveMultiSeries = useMultiStash ? lastMultiSeriesRef.current : cfg.multiSeries!
+    const multiBadgesActive = cfg.showBadge
 
     // Reserve just enough right-side space so endpoint labels don't overlap
     // grid value text (which starts at w - pad.right + 8). Labels are drawn
     // at lineEnd + 6, so overlap = labelW + 6 - 8 = labelW - 2.
     // Scale with chartReveal so layout doesn't shift during loading collapse.
     let labelReserve = 0
-    if (effectiveMultiSeries.some(s => s.label)) {
+    if (!multiBadgesActive && effectiveMultiSeries.some(s => s.label)) {
       ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
       let maxLabelW = 0
       for (const s of effectiveMultiSeries) {
@@ -1470,7 +1573,7 @@ export function useLivelineEngine(
     }
 
     const chartW = w - pad.left - pad.right - labelReserve
-    const buffer = cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE
+    const buffer = cfg.windowBufferOverride ?? (cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE)
 
     // Clean stale entries from displayValuesRef (series that were removed)
     if (!useMultiStash) {
@@ -1610,6 +1713,7 @@ export function useLivelineEngine(
       ctx.fillRect(0, 0, pad.left + FADE_EDGE_WIDTH, h)
       ctx.restore()
       if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+      hideBadgeMap(multiBadgeRefs.current)
       rafRef.current = requestAnimationFrame(draw)
       return
     }
@@ -1705,6 +1809,7 @@ export function useLivelineEngine(
       now,
       showGrid: cfg.showGrid,
       showPulse: cfg.showPulse,
+      showLabels: !multiBadgesActive,
       referenceLine: cfg.referenceLine,
       hoverX: drawHoverX,
       hoverTime: drawHoverTime,
@@ -1724,7 +1829,8 @@ export function useLivelineEngine(
       momentum: primaryMomentum,
       arrowState: arrowStateRef.current,
       orderbookData: cfg.orderbookData,
-      orderbookState: cfg.orderbookData ? orderbookStateRef.current : undefined,
+      tradeStreamData: cfg.tradeStreamData,
+      orderbookState: orderbookStateRef.current,
       particleState: cfg.degenOptions ? particleStateRef.current : undefined,
       particleOptions: cfg.degenOptions,
       swingMagnitude: primarySwingMagnitude,
@@ -1750,6 +1856,57 @@ export function useLivelineEngine(
     // Hide badge in multi-series mode
     if (badgeRef.current) badgeRef.current.container.style.display = 'none'
 
+    if (multiBadgesActive) {
+      const container = containerRef.current
+      const visibleBadgeEntries = seriesEntries.filter(entry => (entry.alpha ?? 1) > 0.01)
+      const activeBadgeIds = new Set(visibleBadgeEntries.map(entry => entry.id))
+      for (const [id, badge] of multiBadgeRefs.current) {
+        if (!activeBadgeIds.has(id)) {
+          badge.container.style.display = 'none'
+          multiBadgeYRefs.current.set(id, null)
+        }
+      }
+
+      if (container && visibleBadgeEntries.length > 0) {
+        const pillH = BADGE_LINE_H + BADGE_PAD_Y * 2
+        const badgeGap = 2
+        const minY = pad.top + pillH / 2
+        const maxY = Math.max(minY, h - pad.bottom - pillH / 2)
+        const targets = visibleBadgeEntries
+          .map(entry => ({
+            entry,
+            y: Math.max(minY, Math.min(maxY, layout.toY(entry.smoothValue))),
+          }))
+          .sort((a, b) => a.y - b.y)
+
+        for (let i = 1; i < targets.length; i++) {
+          targets[i].y = Math.max(targets[i].y, targets[i - 1].y + pillH + badgeGap)
+        }
+        for (let i = targets.length - 1; i >= 0; i--) {
+          const next = targets[i + 1]
+          const maxAllowed = next ? next.y - pillH - badgeGap : maxY
+          targets[i].y = Math.max(minY, Math.min(targets[i].y, maxAllowed))
+        }
+
+        for (const target of targets) {
+          let badge = multiBadgeRefs.current.get(target.entry.id)
+          if (!badge) {
+            badge = createBadgeEls(container)
+            multiBadgeRefs.current.set(target.entry.id, badge)
+          }
+          const prevY = multiBadgeYRefs.current.get(target.entry.id) ?? null
+          const alpha = (target.entry.alpha ?? 1) * (1 - pauseProgress)
+          const nextY = updateSeriesBadgeDOM(
+            badge, cfg, target.entry.palette, target.entry.smoothValue,
+            target.y, layout, prevY, noMotion, ctx, pausedDt, chartReveal, alpha,
+          )
+          multiBadgeYRefs.current.set(target.entry.id, nextY)
+        }
+      }
+    } else {
+      hideBadgeMap(multiBadgeRefs.current)
+    }
+
     // Live value display follows the effective primary series in multi-series mode.
     const valEl = cfg.valueDisplayRef?.current
     if (valEl) {
@@ -1768,6 +1925,7 @@ export function useLivelineEngine(
     // ═══════════════════════════════════════════════════════
 
     const effectivePoints = useStash ? lastDataRef.current : points
+    hideBadgeMap(multiBadgeRefs.current)
 
     // Adaptive speed + smooth value (freeze lerp when using stashed data)
     const adaptiveSpeed = computeAdaptiveSpeed(
@@ -1793,7 +1951,7 @@ export function useLivelineEngine(
     // Dynamic buffer: when badge is off, use a smaller buffer so the dot
     // sits closer to the right edge. When momentum arrows + badge are both
     // on, ensure enough gap for the arrows to fit.
-    const baseBuffer = cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE
+    const baseBuffer = cfg.windowBufferOverride ?? (cfg.showBadge ? WINDOW_BUFFER : WINDOW_BUFFER_NO_BADGE)
     const needsArrowRoom = cfg.showMomentum && cfg.showBadge
     const buffer = needsArrowRoom
       ? Math.max(baseBuffer, 37 / Math.max(chartW, 1))
@@ -1827,6 +1985,7 @@ export function useLivelineEngine(
 
     if (visible.length < 2) {
       if (badgeRef.current) badgeRef.current.container.style.display = 'none'
+      hideBadgeMap(multiBadgeRefs.current)
       rafRef.current = requestAnimationFrame(draw)
       return
     }
@@ -1903,7 +2062,8 @@ export function useLivelineEngine(
       tooltipY: cfg.tooltipY,
       tooltipOutline: cfg.tooltipOutline,
       orderbookData: cfg.orderbookData,
-      orderbookState: cfg.orderbookData ? orderbookStateRef.current : undefined,
+      tradeStreamData: cfg.tradeStreamData,
+      orderbookState: orderbookStateRef.current,
       particleState: cfg.degenOptions ? particleStateRef.current : undefined,
       particleOptions: cfg.degenOptions,
       swingMagnitude,
